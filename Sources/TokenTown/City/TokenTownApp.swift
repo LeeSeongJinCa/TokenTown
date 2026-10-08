@@ -16,7 +16,7 @@ enum TokenTownApp {
 }
 
 @MainActor
-final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var window: NSWindow?
     private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem?
@@ -52,13 +52,16 @@ final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         city = store
         monitor = usage
         let view = CityView(city: store, usage: usage)
-        let controller = NSHostingController(rootView: ScrollView([.horizontal, .vertical]) { view })
+        let controller = NSHostingController(rootView: GeometryReader { geometry in
+            ScrollView(.vertical) {
+                view.frame(minHeight: geometry.size.height, alignment: .topLeading)
+            }
+            .background(TownPalette.paper)
+        })
         let window = NSWindow(contentViewController: controller)
         window.title = "TokenTown"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         let availableHeight = NSScreen.main?.visibleFrame.height ?? 960
-        window.setContentSize(NSSize(width: 1000, height: min(880, availableHeight - 60)))
-        window.contentMinSize = NSSize(width: 800, height: 600)
+        Self.configureCityWindow(window, availableHeight: availableHeight)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
@@ -73,21 +76,43 @@ final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         AppStatePaths.cityDirectory()
     }
 
+    static func configureCityWindow(_ window: NSWindow, availableHeight: CGFloat) {
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        let size = NSSize(width: 1000, height: min(880, availableHeight - 60))
+        window.setContentSize(size)
+        window.contentMinSize = size
+        window.contentMaxSize = size
+        window.collectionBehavior = [.fullScreenNone]
+    }
+
     private func installMenu() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "building.2.fill", accessibilityDescription: "TokenTown")
         item.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let menu = NSMenu()
+        menu.delegate = self
+        menu.autoenablesItems = false
+        for _ in 0..<3 {
+            let summary = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            summary.isEnabled = false
+            menu.addItem(summary)
+        }
+        menu.addItem(.separator())
         menu.addItem(withTitle: "내 도시 열기", action: #selector(showCity), keyEquivalent: "").target = self
         menu.addItem(withTitle: "사용량 새로고침", action: #selector(refresh), keyEquivalent: "").target = self
         menu.addItem(withTitle: "설정…", action: #selector(showSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "TokenTown 종료", action: #selector(quit), keyEquivalent: "q").target = self
+        menu.addItem(withTitle: "메뉴 막대에서 계속 실행", action: #selector(runInBackground), keyEquivalent: "q").target = self
+        let quitItem = menu.addItem(withTitle: "TokenTown 완전히 종료", action: #selector(quit), keyEquivalent: "q")
+        quitItem.keyEquivalentModifierMask = [.command, .option]
+        quitItem.target = self
         item.menu = menu
         statusItem = item
         let mainMenu = NSMenu()
         let appItem = NSMenuItem(title: "TokenTown", action: nil, keyEquivalent: "")
         appItem.submenu = menu.copy() as? NSMenu
+        for _ in 0..<4 { appItem.submenu?.removeItem(at: 0) }
+        appItem.submenu?.delegate = nil
         mainMenu.addItem(appItem)
         let editItem = NSMenuItem(title: "편집", action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: "편집")
@@ -100,25 +125,38 @@ final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         mainMenu.addItem(editItem)
         NSApp.mainMenu = mainMenu
     }
+    func menuWillOpen(_ menu: NSMenu) {
+        guard let city, let monitor else { return }
+        let today = city.state.days[LocalUsageReader.todayKey(), default: CityRewardDay()]
+        menu.item(at: 0)?.title = "자금 \(city.state.balance.formatted()) 코인 · 건물 \(city.state.buildings.count)개"
+        menu.item(at: 1)?.title = "오늘 보상 +\(today.creditedCoins.formatted()) / \(CityState.dailyCoinCap.formatted()) 코인"
+        menu.item(at: 2)?.title = monitor.sources.map { source in
+            "\(source.name): \(monitor.detected.contains(source.id) ? TokenFormatter.compact(monitor.todayTokens[source.id, default: 0]) : "로그 대기 중")"
+        }.joined(separator: " · ")
+    }
     private func observeBalance() {
         guard let city else { return }
         statusItem?.button?.title = " \(city.state.balance.formatted())"
+        statusItem?.button?.toolTip = "TokenTown · \(city.state.balance.formatted()) 코인"
         withObservationTracking { _ = city.state.balance } onChange: { [weak self] in
             Task { @MainActor in self?.observeBalance() }
         }
     }
     @objc private func showCity() {
+        NSApp.setActivationPolicy(.regular)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
     @objc private func showSettings() {
         guard let monitor else { return }
+        NSApp.setActivationPolicy(.regular)
         if settingsWindow == nil {
             let controller = NSHostingController(rootView: CitySettingsView(usage: monitor))
             let settings = NSWindow(contentViewController: controller)
             settings.title = "TokenTown 설정"
             settings.styleMask = [.titled, .closable]
             settings.isReleasedWhenClosed = false
+            settings.delegate = self
             settings.center()
             settingsWindow = settings
         }
@@ -126,7 +164,17 @@ final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         NSApp.activate(ignoringOtherApps: true)
     }
     @objc private func refresh() { Task { await monitor?.refresh() } }
+    @objc private func runInBackground() {
+        window?.orderOut(nil)
+        settingsWindow?.orderOut(nil)
+        NSApp.setActivationPolicy(.accessory)
+    }
     @objc private func quit() { NSApp.terminate(nil) }
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow else { return }
+        let other = closing === window ? settingsWindow : window
+        if other?.isVisible != true { NSApp.setActivationPolicy(.accessory) }
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showCity()
         return false // Already handled: do not let SwiftUI reopen its empty Settings scene.
@@ -167,7 +215,7 @@ final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         }
         let usage = CityUsageMonitor(city: store, sources: previewSources)
         await usage.refresh()
-        let renderer = ImageRenderer(content: CityView(city: store, usage: usage))
+        let renderer = ImageRenderer(content: CityView(city: store, usage: usage).frame(width: 1000, height: 880))
         renderer.scale = 2
         guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else {

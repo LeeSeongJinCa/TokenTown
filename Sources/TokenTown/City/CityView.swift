@@ -42,7 +42,7 @@ struct CityView: View {
             footer
         }
         .padding(28)
-        .frame(width: 1000, height: 880, alignment: .topLeading)
+        .frame(minWidth: 1000, maxWidth: .infinity, minHeight: 880, maxHeight: .infinity, alignment: .topLeading)
         .background(TownPalette.paper)
         .foregroundStyle(TownPalette.ink)
         .buttonStyle(.plain)

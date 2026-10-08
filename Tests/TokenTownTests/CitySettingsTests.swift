@@ -3,6 +3,31 @@ import SwiftUI
 @testable import TokenTown
 
 final class CitySettingsTests: XCTestCase {
+    @MainActor
+    func testCityWindowHasFixedSizeAndCannotEnterFullScreen() {
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled, .resizable], backing: .buffered, defer: true)
+        TokenTownDelegate.configureCityWindow(window, availableHeight: 900)
+        XCTAssertFalse(window.styleMask.contains(.resizable))
+        XCTAssertEqual(window.contentMinSize, NSSize(width: 1000, height: 840))
+        XCTAssertEqual(window.contentMaxSize, window.contentMinSize)
+        XCTAssertTrue(window.collectionBehavior.contains(.fullScreenNone))
+        XCTAssertFalse(TokenTownDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+    }
+
+    @MainActor
+    func testCityViewFillsAnExpandedWindow() throws {
+        let city = CityStore(persistence: ConnectionTestPersistence())
+        let usage = CityUsageMonitor(city: city, sources: [])
+        let renderer = ImageRenderer(content: CityView(city: city, usage: usage).frame(width: 1400, height: 1000))
+        renderer.scale = 1
+        let image = try XCTUnwrap(renderer.nsImage)
+        XCTAssertEqual(image.size.width, 1400)
+        XCTAssertEqual(image.size.height, 1000)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation)))
+        let corner = try XCTUnwrap(bitmap.colorAt(x: 1399, y: 999))
+        XCTAssertEqual(corner.alphaComponent, 1, accuracy: 0.01)
+    }
+
     func testConnectionSettingsAreValidatedBeforeEitherProviderIsSaved() throws {
         let suite = "TokenTownConnections-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
