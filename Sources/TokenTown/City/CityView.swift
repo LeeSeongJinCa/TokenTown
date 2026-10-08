@@ -9,6 +9,14 @@ struct CityView: View {
     @State private var selected: UUID?
     @State private var moving = false
     @State private var showRecovery = false
+    @State private var selectedDistrict = 0
+    @State private var showExpansion = false
+    @State private var night = false
+    @State private var celebrating = false
+    private var districtIndex: Int { city.state.districts.indices.contains(selectedDistrict) ? selectedDistrict : 0 }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var districtBuildings: [CityBuilding] { city.state.buildings.filter { $0.plot.districtID == districtIndex } }
+    private var districtPairs: [(CityBuilding, CityBuilding)] { city.state.neighborPairs.filter { $0.0.plot.districtID == districtIndex } }
     private var today: CityRewardDay { city.state.days[LocalUsageReader.todayKey(), default: CityRewardDay()] }
     private var selectedBuilding: CityBuilding? { city.state.buildings.first { $0.id == selected } }
 
@@ -18,7 +26,7 @@ struct CityView: View {
             HStack(spacing: 14) {
                 metric("사용 가능한 자금", value: "\(city.state.balance.formatted())", unit: "코인", icon: "circle.hexagongrid.fill")
                 metric("오늘의 작업 보상", value: "+\(today.creditedCoins.formatted())", unit: "/ \(CityState.dailyCoinCap.formatted())", icon: "sparkles")
-                metric("내 도시의 건물", value: "\(city.state.buildings.count)", unit: "/ \(CityPlot.side * CityPlot.side)", icon: "building.2.fill")
+                metric("내 도시의 건물", value: "\(city.state.buildings.count)", unit: "/ \(city.state.capacity)", icon: "building.2.fill")
             }
             HStack(alignment: .top, spacing: 24) {
                 shop.frame(width: 260)
@@ -34,7 +42,19 @@ struct CityView: View {
                                 .buttonStyle(TownActionButtonStyle())
                         }
                     }
-                    CityMapView(buildings: city.state.buildings, selected: selected, canPlace: blueprint != nil || moving, onSelect: selectPlot)
+                    districtControls
+                    CityMapView(buildings: districtBuildings, selected: selected, canPlace: blueprint != nil || moving,
+                                onSelect: selectPlot, district: city.state.districts[districtIndex],
+                                neighborPairs: city.state.goalCompleted ? districtPairs : [], night: night, animate: !reduceMotion)
+                        .overlay(alignment: .top) {
+                            if celebrating {
+                                Label("이웃 거리 탄생! 주민들이 찾아왔어요", systemImage: "sparkles")
+                                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(TownPalette.green)
+                                    .padding(14).background(TownPalette.paper, in: Capsule()).padding(.top, 12)
+                                    .transition(.move(edge: .top).combined(with: .opacity))
+                            }
+                        }
+                    goalPanel
                     selectionPanel
                     rewardProgress
                 }
@@ -47,6 +67,17 @@ struct CityView: View {
         .foregroundStyle(TownPalette.ink)
         .buttonStyle(.plain)
         .preferredColorScheme(.light)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: city.state.goalCompleted)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: night)
+        .onChange(of: city.state.goalCompleted) { _, completed in
+            guard completed else { return }
+            withAnimation(reduceMotion ? nil : .spring(duration: 0.4)) { celebrating = true }
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { celebrating = false }
+            }
+        }
+        .sheet(isPresented: $showExpansion) { expansionSheet }
         .alert("이전 저장본으로 복구할까요?", isPresented: $showRecovery) {
             Button("취소", role: .cancel) {}
             Button("복구") { city.recoverBackup() }
@@ -113,37 +144,123 @@ struct CityView: View {
                         .opacity(city.state.balance >= kind.price ? 1 : 0.60)
                     }
                     .buttonStyle(.plain)
-                    .disabled(city.isReadOnly || city.state.balance < kind.price || city.state.buildings.count == 25)
+                    .disabled(city.isReadOnly || city.state.balance < kind.price || districtBuildings.count == CityPlot.side * CityPlot.side)
                     .accessibilityLabel("\(kind.name), \(kind.price) 코인, 선택 후 빈 땅에 배치")
                 }
             }
         }
     }
+    private var districtControls: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(city.state.districts.enumerated()), id: \.offset) { index, district in
+                Button {
+                    selectedDistrict = index
+                    selected = nil; blueprint = nil; moving = false
+                } label: {
+                    Text(district.name).font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .foregroundStyle(districtIndex == index ? .white : TownPalette.green)
+                        .background(districtIndex == index ? TownPalette.green : TownPalette.green.opacity(0.08), in: Capsule())
+                }.accessibilityAddTraits(districtIndex == index ? .isSelected : [])
+            }
+            Spacer()
+            Button { night.toggle() } label: {
+                Label(night ? "낮으로" : "밤으로", systemImage: night ? "sun.max" : "moon.stars")
+            }.buttonStyle(TownActionButtonStyle())
+        }
+    }
+    private var goalPanel: some View {
+        HStack(spacing: 12) {
+            Image(systemName: city.state.goalCompleted ? "sparkles" : "house.and.flag.fill")
+                .font(.system(size: 22)).foregroundStyle(TownPalette.green)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(city.state.goalCompleted ? "이웃 거리 완성!" : "첫 목표 · 이웃 거리")
+                    .font(.system(size: 14, weight: .semibold))
+                Text(city.state.goalCompleted ? (city.state.neighborPairs.isEmpty ? "목표는 유지돼요 · 집과 카페를 다시 연결하면 주민들이 돌아와요" : "주민들이 거리로 나왔어요 · 목표 보상 +200 코인") : "집과 카페를 옆 땅에 놓으세요 · +200 코인 · 새 지구")
+                    .font(.system(size: 11)).foregroundStyle(TownPalette.muted)
+            }
+            Spacer(minLength: 0)
+            if !city.state.goalCompleted {
+                Button(city.state.neighborPairs.isEmpty ? "조합 대기 중" : "거리 완성하기") { city.claimNeighborGoal() }
+                    .disabled(city.isReadOnly || city.state.neighborPairs.isEmpty)
+                    .buttonStyle(TownActionButtonStyle())
+            } else if city.state.districts.count == 1 {
+                Button("새 지구 선택") { showExpansion = true }
+                    .disabled(city.isReadOnly).buttonStyle(TownActionButtonStyle())
+            } else {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(TownPalette.green)
+            }
+        }
+        .padding(14)
+        .background(TownPalette.green.opacity(city.state.goalCompleted ? 0.12 : 0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+    private var expansionSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("우리 도시의 다음 장").font(.system(size: 25, weight: .bold, design: .rounded))
+            Text("두 번째 지구는 어디에 만들까요? 25개의 새 땅이 무료로 열립니다. 선택은 저장됩니다.")
+                .font(.system(size: 12)).foregroundStyle(TownPalette.muted)
+            HStack(spacing: 16) {
+                ForEach([CityDistrict.woodland, .riverside], id: \.self) { district in
+                    Button {
+                        if city.expand(to: district) {
+                            selectedDistrict = 1; selected = nil; blueprint = nil; moving = false
+                            showExpansion = false
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Image(systemName: district == .woodland ? "tree.fill" : "water.waves")
+                                .font(.system(size: 42)).foregroundStyle(TownPalette.green)
+                            Text(district.name).font(.system(size: 17, weight: .semibold))
+                            Text(district.subtitle).font(.system(size: 11)).foregroundStyle(TownPalette.muted)
+                            Text("이곳에 만들기 →").font(.system(size: 12, weight: .semibold))
+                        }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(TownPalette.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+                    }.disabled(city.isReadOnly || city.state.districts.count != 1)
+                }
+            }
+            if let error = city.errorMessage { Text(error).font(.system(size: 12)).foregroundStyle(.red) }
+            Button("나중에 선택") { showExpansion = false }.buttonStyle(TownActionButtonStyle())
+        }.padding(28).frame(width: 580).background(TownPalette.paper)
+    }
     private var mapInstruction: String {
         if moving { return "이사할 빈 땅을 클릭하세요. 이동은 무료입니다." }
         if let blueprint, let kind = CityBuildingKind.find(blueprint) { return "\(kind.name) · 빈 땅을 클릭하면 \(kind.price) 코인으로 구매합니다." }
-        return "5 × 5개의 땅 · 건물이 놓인 땅을 클릭하면 자세히 볼 수 있어요."
+        return city.state.districts[districtIndex].subtitle
     }
     private var selectionPanel: some View {
-        HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             if let building = selectedBuilding, let kind = CityBuildingKind.find(building.kindID) {
-                Image(systemName: kind.symbol).foregroundStyle(TownPalette.building(kind.color))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(kind.name).font(.system(size: 13, weight: .semibold))
-                    Text("\(building.plot.row + 1)행 \(building.plot.column + 1)열 · 구매가 \(kind.price) 코인")
-                        .font(.system(size: 11)).foregroundStyle(TownPalette.muted)
+                HStack {
+                    Image(systemName: kind.symbol).foregroundStyle(TownPalette.building(kind.color))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(kind.name) · Lv.\(building.level)").font(.system(size: 13, weight: .semibold))
+                        Text("\(building.plot.row + 1)행 \(building.plot.column + 1)열 · 구매가 \(building.paidCoins) 코인")
+                            .font(.system(size: 11)).foregroundStyle(TownPalette.muted)
+                    }
+                    Spacer()
+                    Button("건물 이동") { moving = true; blueprint = nil }
+                        .buttonStyle(TownActionButtonStyle()).disabled(city.isReadOnly)
                 }
-                Spacer()
-                Button("건물 이동") { moving = true; blueprint = nil }
-                    .buttonStyle(TownActionButtonStyle()).disabled(city.isReadOnly)
+                HStack(spacing: 8) {
+                    Button(building.level == 3 ? "최고 단계" : "성장 · \(building.upgradePrice) 코인") {
+                        city.upgrade(buildingID: building.id)
+                    }
+                    .disabled(city.isReadOnly || building.level == 3 || city.state.balance < building.upgradePrice)
+                    Button(building.decorated ? "나무·벤치 설치됨" : "나무·벤치 · \(CityState.decorationPrice) 코인") {
+                        city.decorate(buildingID: building.id)
+                    }
+                    .disabled(city.isReadOnly || building.decorated || city.state.balance < CityState.decorationPrice)
+                }.buttonStyle(TownActionButtonStyle())
             } else {
-                Image(systemName: "leaf.fill").foregroundStyle(TownPalette.green)
-                Text(city.notice ?? (city.state.buildings.isEmpty ? "시작 자금 \(CityState.startingCoins) 코인으로 첫 집을 지어 보세요." : "건물이 놓인 땅을 클릭해서 내 이웃을 둘러보세요."))
-                    .font(.system(size: 12))
-                Spacer()
+                HStack {
+                    Image(systemName: "leaf.fill").foregroundStyle(TownPalette.green)
+                    Text(city.notice ?? (city.state.buildings.isEmpty ? "시작 자금 \(CityState.startingCoins) 코인으로 첫 집을 지어 보세요." : "건물이 놓인 땅을 클릭해서 내 이웃을 둘러보세요."))
+                        .font(.system(size: 12))
+                    Spacer()
+                }
             }
         }
-        .padding(14).frame(height: 61)
+        .padding(14).frame(minHeight: 61)
         .background(.white.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
     }
     private var rewardProgress: some View {
@@ -197,8 +314,9 @@ struct CityView: View {
                 .font(.system(size: 10)).foregroundStyle(TownPalette.muted)
         }
     }
-    private func selectPlot(_ plot: CityPlot) {
+    private func selectPlot(_ localPlot: CityPlot) {
         guard !city.isReadOnly else { return }
+        let plot = CityPlot(row: localPlot.row, column: localPlot.column, districtID: districtIndex)
         if let building = city.state.buildings.first(where: { $0.plot == plot }) {
             if moving { city.errorMessage = CityError.occupiedPlot.localizedDescription; return }
             selected = building.id

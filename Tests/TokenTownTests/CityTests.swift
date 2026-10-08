@@ -91,9 +91,9 @@ final class CityModelTests: XCTestCase {
         city.lifetimeEarned = Int.max
         XCTAssertThrowsError(try city.validate())
         city.lifetimeEarned = 0
-        city.version = 2
+        city.version = CityState.schemaVersion + 1
         XCTAssertThrowsError(try city.validate())
-        city.version = 1
+        city.version = CityState.schemaVersion
         city.balance = 999
         XCTAssertThrowsError(try city.validate())
     }
@@ -236,12 +236,13 @@ final class CityUsageIntegrationTests: XCTestCase {
         XCTAssertTrue(monitor.detected.isEmpty)
         XCTAssertEqual(city.state.balance, 200)
     }
-    func testNativeCityViewRendersAtExpectedSize() {
+    func testNativeCityViewRendersAllContentAtFixedWindowWidth() {
         let city = CityStore(persistence: FailingCityPersistence())
         let monitor = CityUsageMonitor(city: city, sources: [])
         let renderer = ImageRenderer(content: CityView(city: city, usage: monitor))
         XCTAssertNotNil(renderer.nsImage)
-        XCTAssertEqual(renderer.nsImage?.size, NSSize(width: 1000, height: 880))
+        XCTAssertEqual(renderer.nsImage?.size.width, 1000)
+        XCTAssertGreaterThanOrEqual(renderer.nsImage?.size.height ?? 0, 880)
         if let tiff = renderer.nsImage?.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) {
             var unsupportedControlPixels = 0
             for y in stride(from: 0, to: bitmap.pixelsHigh, by: 8) {

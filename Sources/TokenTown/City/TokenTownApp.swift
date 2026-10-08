@@ -203,9 +203,14 @@ final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         sample.lifetimeEarned += 1000
         sample.balance += sample.lifetimeEarned
         try sample.purchase(kindID: "cottage", at: .init(row: 1, column: 1))
-        try sample.purchase(kindID: "cafe", at: .init(row: 1, column: 3))
+        try sample.purchase(kindID: "cafe", at: .init(row: 1, column: 2))
         try sample.purchase(kindID: "bookshop", at: .init(row: 3, column: 1))
         try sample.purchase(kindID: "apartment", at: .init(row: 2, column: 2))
+        try sample.claimNeighborGoal()
+        try sample.expand(to: .riverside)
+        try sample.upgrade(buildingID: sample.buildings[0].id)
+        try sample.decorate(buildingID: sample.buildings[1].id)
+        try sample.validate()
         let store = CityStore(persistence: CityPreviewPersistence(state: sample))
         let previewSources = CityUsageSource.local.map { source in
             let count = sample.days[today]!.highWater[source.id, default: 0]
@@ -215,7 +220,7 @@ final class TokenTownDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate
         }
         let usage = CityUsageMonitor(city: store, sources: previewSources)
         await usage.refresh()
-        let renderer = ImageRenderer(content: CityView(city: store, usage: usage).frame(width: 1000, height: 880))
+        let renderer = ImageRenderer(content: CityView(city: store, usage: usage).frame(width: 1000, height: 1080))
         renderer.scale = 2
         guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else {

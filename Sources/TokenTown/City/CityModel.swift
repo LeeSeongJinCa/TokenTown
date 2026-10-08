@@ -23,6 +23,7 @@ struct CityBuildingKind: Identifiable, Sendable {
 struct CityPlot: Codable, Hashable, Sendable {
     let row: Int
     let column: Int
+    var districtID = 0
     static let side = 5
     var isValid: Bool { (0..<Self.side).contains(row) && (0..<Self.side).contains(column) }
 }
@@ -32,6 +33,30 @@ struct CityBuilding: Codable, Identifiable, Equatable, Sendable {
     let kindID: String
     var plot: CityPlot
     let purchasedAt: Date
+    var paidCoins = 0
+    var level = 1
+    var upgradeCoins = 0
+    var decorated = false
+    var decorationCoins = 0
+    var upgradePrice: Int { level * 120 }
+}
+
+enum CityDistrict: String, Codable, CaseIterable, Sendable {
+    case oldTown, woodland, riverside
+    var name: String {
+        switch self {
+        case .oldTown: "첫 동네"
+        case .woodland: "숲속 지구"
+        case .riverside: "강변 지구"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .oldTown: "작은 집에서 시작하는 우리 동네"
+        case .woodland: "숲과 산책길이 감싸는 조용한 동네"
+        case .riverside: "물결과 불빛이 만나는 동네"
+        }
+    }
 }
 
 struct CityRewardDay: Codable, Equatable, Sendable {
@@ -41,7 +66,7 @@ struct CityRewardDay: Codable, Equatable, Sendable {
 }
 
 struct CityState: Codable, Equatable, Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     static let startingCoins = 200
     static let tokensPerCoin = 10_000
     static let dailyCoinCap = 1_000
@@ -51,6 +76,60 @@ struct CityState: Codable, Equatable, Sendable {
     var sourceStartDays: [String: String] = [:]
     var days: [String: CityRewardDay] = [:]
     var buildings: [CityBuilding] = []
+    var districts: [CityDistrict] = [.oldTown]
+    var goalRewards: [String: Int] = [:]
+    static let neighborGoal = "first-neighbors"
+    static let neighborReward = 200
+    static let decorationPrice = 50
+    var goalCompleted: Bool { goalRewards[Self.neighborGoal] != nil }
+    var goalEarned: Int { goalRewards.values.reduce(0, +) }
+    var capacity: Int { districts.count * CityPlot.side * CityPlot.side }
+    var neighborPairs: [(CityBuilding, CityBuilding)] {
+        buildings.filter { $0.kindID == "cottage" }.flatMap { home in
+            buildings.filter {
+                $0.kindID == "cafe" && $0.plot.districtID == home.plot.districtID &&
+                abs($0.plot.row - home.plot.row) + abs($0.plot.column - home.plot.column) == 1
+            }.map { (home, $0) }
+        }
+    }
+
+    init() {}
+    private enum CodingKeys: String, CodingKey {
+        case version, balance, lifetimeEarned, sourceStartDays, days, buildings, districts, goalRewards
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let savedVersion = try values.decode(Int.self, forKey: .version)
+        guard (1...Self.schemaVersion).contains(savedVersion) else { throw CityError.unsupportedVersion }
+        version = Self.schemaVersion
+        balance = try values.decode(Int.self, forKey: .balance)
+        lifetimeEarned = try values.decode(Int.self, forKey: .lifetimeEarned)
+        sourceStartDays = try values.decode([String: String].self, forKey: .sourceStartDays)
+        days = try values.decode([String: CityRewardDay].self, forKey: .days)
+        if savedVersion == 1 {
+            // Freeze v1 prices: future catalog balancing must never alter historical purchases.
+            let prices = ["cottage": 120, "cafe": 240, "bookshop": 380, "apartment": 650, "studio": 950, "tower": 1600]
+            let legacy = try values.decode([LegacyBuilding].self, forKey: .buildings)
+            buildings = try legacy.map { building in
+                guard let price = prices[building.kindID] else { throw CityError.invalidSave }
+                return CityBuilding(id: building.id, kindID: building.kindID,
+                                    plot: .init(row: building.plot.row, column: building.plot.column),
+                                    purchasedAt: building.purchasedAt, paidCoins: price)
+            }
+        } else {
+            buildings = try values.decode([CityBuilding].self, forKey: .buildings)
+            districts = try values.decode([CityDistrict].self, forKey: .districts)
+            goalRewards = try values.decode([String: Int].self, forKey: .goalRewards)
+        }
+        try validate()
+    }
+    private struct LegacyBuilding: Decodable {
+        struct Plot: Decodable { let row: Int; let column: Int }
+        let id: UUID
+        let kindID: String
+        let plot: Plot
+        let purchasedAt: Date
+    }
 
     /// The first successful observation of each source establishes today's baseline.
     /// All subsequent days and offline increments use persistent monotonic watermarks.
@@ -86,38 +165,75 @@ struct CityState: Codable, Equatable, Sendable {
 
     mutating func purchase(kindID: String, at plot: CityPlot, now: Date = Date()) throws {
         guard let kind = CityBuildingKind.find(kindID) else { throw CityError.unknownBuilding }
-        guard plot.isValid else { throw CityError.invalidPlot }
+        guard plot.isValid, districts.indices.contains(plot.districtID) else { throw CityError.invalidPlot }
         guard !buildings.contains(where: { $0.plot == plot }) else { throw CityError.occupiedPlot }
         guard balance >= kind.price else { throw CityError.insufficientFunds }
         balance -= kind.price
-        buildings.append(.init(id: UUID(), kindID: kindID, plot: plot, purchasedAt: now))
+        buildings.append(.init(id: UUID(), kindID: kindID, plot: plot, purchasedAt: now, paidCoins: kind.price))
     }
 
     mutating func move(buildingID: UUID, to plot: CityPlot) throws {
-        guard plot.isValid else { throw CityError.invalidPlot }
+        guard plot.isValid, districts.indices.contains(plot.districtID) else { throw CityError.invalidPlot }
         guard let index = buildings.firstIndex(where: { $0.id == buildingID }) else { throw CityError.unknownBuilding }
         guard !buildings.contains(where: { $0.plot == plot && $0.id != buildingID }) else { throw CityError.occupiedPlot }
         buildings[index].plot = plot
     }
 
+    mutating func claimNeighborGoal() throws {
+        guard !goalCompleted, !neighborPairs.isEmpty else { throw CityError.goalUnavailable }
+        goalRewards[Self.neighborGoal] = Self.neighborReward
+        balance += Self.neighborReward
+    }
+    mutating func expand(to district: CityDistrict) throws {
+        // ponytail: Two districts for this loop; add progression and a schema migration before a third.
+        guard goalCompleted, districts.count == 1, district != .oldTown else { throw CityError.expansionUnavailable }
+        districts.append(district)
+    }
+    mutating func upgrade(buildingID: UUID) throws {
+        guard let index = buildings.firstIndex(where: { $0.id == buildingID }) else { throw CityError.unknownBuilding }
+        guard buildings[index].level < 3 else { throw CityError.maxLevel }
+        let price = buildings[index].upgradePrice
+        guard balance >= price else { throw CityError.insufficientFunds }
+        balance -= price
+        buildings[index].upgradeCoins += price
+        buildings[index].level += 1
+    }
+    mutating func decorate(buildingID: UUID) throws {
+        guard let index = buildings.firstIndex(where: { $0.id == buildingID }) else { throw CityError.unknownBuilding }
+        guard !buildings[index].decorated else { throw CityError.alreadyDecorated }
+        guard balance >= Self.decorationPrice else { throw CityError.insufficientFunds }
+        balance -= Self.decorationPrice
+        buildings[index].decorationCoins = Self.decorationPrice
+        buildings[index].decorated = true
+    }
+
     func validate() throws {
         guard version == Self.schemaVersion else { throw CityError.unsupportedVersion }
         guard (0...100_000_000).contains(balance), (0...100_000_000).contains(lifetimeEarned),
-              buildings.count <= CityPlot.side * CityPlot.side, days.count <= 100_000 else { throw CityError.invalidSave }
-        let spent = buildings.reduce(0) { $0 + (CityBuildingKind.find($1.kindID)?.price ?? 0) }
-        guard balance >= 0, lifetimeEarned >= 0,
-              days.count <= 100_000, buildings.count <= CityPlot.side * CityPlot.side,
+              (1...2).contains(districts.count), districts.first == .oldTown,
+              Set(districts).count == districts.count,
+              buildings.count <= capacity, days.count <= 100_000,
+              goalRewards.count <= 1,
+              goalRewards.allSatisfy({ $0.key == Self.neighborGoal && $0.value == Self.neighborReward }),
+              districts.count == 1 || goalCompleted,
               Set(buildings.map(\.id)).count == buildings.count,
               Set(buildings.map(\.plot)).count == buildings.count,
-              buildings.allSatisfy({ $0.plot.isValid && CityBuildingKind.find($0.kindID) != nil }),
+              buildings.allSatisfy({
+                  $0.plot.isValid && districts.indices.contains($0.plot.districtID) && CityBuildingKind.find($0.kindID) != nil &&
+                  (0...1_000_000).contains($0.paidCoins) && (1...3).contains($0.level) &&
+                  (0...1_000_000).contains($0.upgradeCoins) &&
+                  ($0.level == 1 ? $0.upgradeCoins == 0 : $0.upgradeCoins > 0) &&
+                  ($0.decorated ? (1...1_000_000).contains($0.decorationCoins) : $0.decorationCoins == 0)
+              }),
               sourceStartDays.values.allSatisfy(Self.isDay),
               days.allSatisfy({ key, day in
                   Self.isDay(key) && day.highWater.values.allSatisfy { $0 >= 0 }
                     && (0...Self.dailyCoinCap * Self.tokensPerCoin).contains(day.eligibleTokens)
                     && day.creditedCoins == day.eligibleTokens / Self.tokensPerCoin
-              }),
-              lifetimeEarned == days.values.reduce(0, { $0 + $1.creditedCoins }),
-              balance == Self.startingCoins + lifetimeEarned - spent else { throw CityError.invalidSave }
+              }) else { throw CityError.invalidSave }
+        let spent = buildings.reduce(0) { $0 + $1.paidCoins + $1.upgradeCoins + $1.decorationCoins }
+        guard lifetimeEarned == days.values.reduce(0, { $0 + $1.creditedCoins }),
+              balance == Self.startingCoins + lifetimeEarned + goalEarned - spent else { throw CityError.invalidSave }
     }
 
     static func isDay(_ value: String) -> Bool {
@@ -132,9 +248,13 @@ struct CityState: Codable, Equatable, Sendable {
 }
 
 enum CityError: LocalizedError {
-    case invalidUsage, invalidPlot, occupiedPlot, insufficientFunds, unknownBuilding, unsupportedVersion, invalidSave, readOnly
+    case invalidUsage, invalidPlot, occupiedPlot, insufficientFunds, unknownBuilding, unsupportedVersion, invalidSave, readOnly, goalUnavailable, expansionUnavailable, maxLevel, alreadyDecorated
     var errorDescription: String? {
         switch self {
+        case .goalUnavailable: "집과 카페를 같은 지구의 옆 땅에 놓아 주세요. 보상은 한 번만 받을 수 있습니다."
+        case .expansionUnavailable: "이웃 거리 목표를 완성하면 두 번째 지구를 선택할 수 있습니다."
+        case .maxLevel: "최고 단계까지 성장한 건물입니다."
+        case .alreadyDecorated: "이미 나무와 벤치가 있는 건물입니다."
         case .invalidUsage: "사용량 기록의 날짜나 수량이 올바르지 않습니다."
         case .invalidPlot: "도시 바깥에는 건물을 놓을 수 없습니다."
         case .occupiedPlot: "이미 건물이 있는 땅입니다. 빈 땅을 선택해 주세요."

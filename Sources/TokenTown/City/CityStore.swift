@@ -48,8 +48,11 @@ struct CityDiskPersistence: CityPersistence {
         let fm = FileManager.default
         if fm.fileExists(atPath: file.path) {
             // A future schema is never downgraded by the recovery action.
-            if let primary = try? JSONDecoder().decode(CityState.self, from: Data(contentsOf: file)),
-               primary.version != CityState.schemaVersion { throw CityError.unsupportedVersion }
+            let data = try Data(contentsOf: file)
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let version = object["version"] as? Int, version > CityState.schemaVersion {
+                throw CityError.unsupportedVersion
+            }
             try fm.copyItem(at: file, to: directory.appendingPathComponent("city.damaged-\(UUID().uuidString).json"))
         }
         try Data(contentsOf: backup).write(to: file, options: .atomic)
@@ -106,6 +109,30 @@ final class CityStore {
     func move(buildingID: UUID, to plot: CityPlot) -> Bool {
         let result = transact { try $0.move(buildingID: buildingID, to: plot) }
         if result { notice = "건물의 새 주소를 저장했어요." }
+        return result
+    }
+    @discardableResult
+    func claimNeighborGoal() -> Bool {
+        let result = transact { try $0.claimNeighborGoal() }
+        if result { notice = "이웃 거리 완성! +200 목표 코인 · 새 지구가 열렸어요." }
+        return result
+    }
+    @discardableResult
+    func expand(to district: CityDistrict) -> Bool {
+        let result = transact { try $0.expand(to: district) }
+        if result { notice = "\(district.name)에 새로운 25개의 땅이 열렸어요." }
+        return result
+    }
+    @discardableResult
+    func upgrade(buildingID: UUID) -> Bool {
+        let result = transact { try $0.upgrade(buildingID: buildingID) }
+        if result { notice = "건물이 성장했어요. 새 지붕과 따뜻한 창을 확인하세요." }
+        return result
+    }
+    @discardableResult
+    func decorate(buildingID: UUID) -> Bool {
+        let result = transact { try $0.decorate(buildingID: buildingID) }
+        if result { notice = "나무와 벤치가 생겼어요. 잠깐 쉬어갈 공간입니다." }
         return result
     }
     func recoverBackup() {
