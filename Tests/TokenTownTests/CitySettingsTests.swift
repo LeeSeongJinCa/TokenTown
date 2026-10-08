@@ -62,6 +62,10 @@ final class CitySettingsTests: XCTestCase {
     func testEveryBuildingFootprintReachesTheFrontHalfOfItsGroundTile() throws {
         let plot = CityPlot(row: 2, column: 2)
         let center = CityMapView.point(plot)
+        let groundRenderer = ImageRenderer(content: CityMapView(buildings: [], selected: nil, canPlace: false, onSelect: { _ in }))
+        groundRenderer.scale = 1
+        let ground = try XCTUnwrap(groundRenderer.nsImage)
+        let groundBitmap = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(ground.tiffRepresentation)))
         for kind in CityBuildingKind.catalog {
             let building = CityBuilding(id: UUID(), kindID: kind.id, plot: plot, purchasedAt: Date())
             let renderer = ImageRenderer(content: CityMapView(buildings: [building], selected: nil, canPlace: false, onSelect: { _ in }))
@@ -77,6 +81,14 @@ final class CitySettingsTests: XCTestCase {
             XCTAssertEqual(pixel.redComponent, expected.redComponent, accuracy: 0.04, kind.id)
             XCTAssertEqual(pixel.greenComponent, expected.greenComponent, accuracy: 0.04, kind.id)
             XCTAssertEqual(pixel.blueComponent, expected.blueComponent, accuracy: 0.04, kind.id)
+            for x in [-20, 0, 20] {
+                let y = Int(center.y) + 16 - abs(x) / 2
+                let actualGround = try XCTUnwrap(bitmap.colorAt(x: Int(center.x) + x, y: y)?.usingColorSpace(.deviceRGB))
+                let expectedGround = try XCTUnwrap(groundBitmap.colorAt(x: Int(center.x) + x, y: y)?.usingColorSpace(.deviceRGB))
+                XCTAssertEqual(actualGround.redComponent, expectedGround.redComponent, accuracy: 0.01, kind.id)
+                XCTAssertEqual(actualGround.greenComponent, expectedGround.greenComponent, accuracy: 0.01, kind.id)
+                XCTAssertEqual(actualGround.blueComponent, expectedGround.blueComponent, accuracy: 0.01, kind.id)
+            }
         }
     }
 }

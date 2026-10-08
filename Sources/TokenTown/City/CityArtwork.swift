@@ -96,7 +96,6 @@ struct CityMapView: View {
         let right = CGPoint(x: p.x + w, y: p.y - d)
         let front = CGPoint(x: p.x, y: p.y)
         let color = TownPalette.building(kind.color)
-        context.fill(Path(ellipseIn: CGRect(x: center.x - 31, y: center.y - 12, width: 62, height: 29)), with: .color(.black.opacity(0.09)))
         context.fill(polygon([left, .init(x: left.x, y: left.y - h), top, front]), with: .color(color))
         context.fill(polygon([front, top, .init(x: right.x, y: right.y - h), right]), with: .color(TownPalette.building(kind.color, shade: 0.82)))
         context.fill(polygon([top, .init(x: left.x, y: left.y - h), .init(x: p.x, y: p.y - h - d * 2), .init(x: right.x, y: right.y - h)]), with: .color(TownPalette.building(kind.color, shade: 1.18)))
